@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Для мамы</title>
+<style>
+  :root { color-scheme: dark; box-sizing: border-box; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+  html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: radial-gradient(ellipse at 50% 38%, #2b0f20 0%, #0b0509 72%);
+    color: #ffe9dc; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: .4rem; padding: .5rem; box-sizing: border-box; overflow: hidden;
+  }
+  canvas { display: block; width: min(96vw, calc((100vh - 8rem) / 1.15)); touch-action: manipulation; }
+  p {
+    font-family: Georgia, "Times New Roman", serif; font-style: italic; margin: 0; text-align: center;
+    font-size: clamp(1.4rem, 6vw, 2.2rem); min-height: 1.5em; text-shadow: 0 0 22px rgba(255, 90, 120, .45);
+  }
+  .cursor { display: inline-block; width: 2px; height: 1em; margin-left: 3px; background: #d9a9b4; vertical-align: -0.12em; animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  button {
+    font: .95rem ui-monospace, Consolas, monospace; color: #d9a9b4; background: none; border: 1px solid #6d4455;
+    border-radius: 999px; padding: .4rem 1.1rem; cursor: pointer; opacity: 0; pointer-events: none; transition: opacity .8s;
+  }
+  button.show { opacity: 1; pointer-events: auto; }
+  button:focus-visible { outline: 2px solid #ffe9dc; outline-offset: 3px; }
+  @media (prefers-reduced-motion: reduce) { .cursor { animation: none; } }
+</style>
+</head>
+<body>
+<canvas id="c" role="img" aria-label="Розовый бутон раскрывается в розу"></canvas>
+<p id="msg"><span id="txt"></span><span class="cursor"></span></p>
+<button id="again" type="button">ещё раз</button>
+
+<script>
+(function () {
+  var TEXT = "Мама, спасибо тебе за всё";              // <- здесь можно поменять текст
+  var COLS = 80, ROWS = 46, SX = 4, SY = 8, W = COLS * SX, H = ROWS * SY, BX = W / 2, BY = 205;
+  var RAMP = [" ", ".", ":", "-", "=", "+", "*", "%", "#", "@"];
+  var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var cv = document.getElementById("c"), ctx = cv.getContext("2d");
+  var off = document.createElement("canvas"); off.width = W; off.height = H;
+  var g = off.getContext("2d", { willReadFrequently: true });
+  var txt = document.getElementById("txt"), btn = document.getElementById("again");
+  var cw = 5, ch = 10, dpr = 1, t0 = 0, raf, kickAt = 0, bits = [];
+
+  var T_GROW = 400, D_GROW = 2600, T_BLOOM = T_GROW + D_GROW + 900, D_BLOOM = 6200;
+  var T_TEXT = T_BLOOM + D_BLOOM - 1800, T_DONE = T_TEXT + TEXT.length * 100 + 900;
+
+  function clamp(v) { return Math.max(0, Math.min(1, v)); }
+  function easeOut(p) { return 1 - Math.pow(1 - p, 3); }
+  function smooth(p) { return p * p * (3 - 2 * p); }
+  function mix(a, b, t, f) { return "rgb(" + [0, 1, 2].map(function (i) { return Math.round((a[i] + (b[i] - a[i]) * t) * f); }).join(",") + ")"; }
+
+  // petal layers: outer (dark red) to inner (soft pink); lc = lean when closed, lo = lean when open
+  var LAY = [
+    { n: 6, r: 30, len: 105, wid: 78, lc: 0.10, lo: 0.85 }, { n: 5, r: 22, len: 96, wid: 70, lc: 0.08, lo: 0.65 },
+    { n: 5, r: 15, len: 86, wid: 60, lc: 0.06, lo: 0.45 }, { n: 4, r: 9, len: 74, wid: 50, lc: 0.04, lo: 0.27 },
+    { n: 3, r: 4, len: 58, wid: 40, lc: 0.02, lo: 0.10 }
+  ];
+  var petals = [];
+  LAY.forEach(function (L, l) {
+    for (var j = 0; j < L.n; j++) {
+      var phi = Math.PI * 2 * j / L.n + l * 0.9;
+      petals.push({ L: L, l: l, phi: phi, key: Math.cos(phi) < 0 ? l : 20 - l });
+    }
+  });
+  petals.sort(function (a, b) { return a.key - b.key; });
+
+  function drawPetal(P, p, sway) {
+    var L = P.L, t = P.l / 4, cph = Math.cos(P.phi), sph = Math.sin(P.phi), back = cph < 0 ? 0.62 : 1;
+    var lean = L.lc + (L.lo - L.lc) * p;
+    var len = L.len * (0.85 + 0.15 * p), w = L.wid * (0.6 + 0.4 * Math.abs(cph)) * (1 + 0.14 * (1 - p));
+    g.save();
+    g.translate(BX + sway + sph * L.r * (0.5 + 0.5 * p), BY);
+    g.rotate(sph * lean); g.scale(1, 1 - 0.22 * lean * Math.abs(cph));
+    g.beginPath(); g.moveTo(0, 0);
+    g.bezierCurveTo(-w * 0.75, -len * 0.12, -w * 0.72, -len * 0.82, -w * 0.2, -len);
+    g.bezierCurveTo(-w * 0.07, -len * 1.04, w * 0.07, -len * 1.04, w * 0.2, -len);
+    g.bezierCurveTo(w * 0.72, -len * 0.82, w * 0.75, -len * 0.12, 0, 0);
+    g.closePath();
+    var gr = g.createLinearGradient(0, 0, 0, -len);
+    gr.addColorStop(0, mix([150, 12, 48], [205, 35, 80], t, back));
+    gr.addColorStop(1, mix([235, 55, 95], [255, 160, 185], t, back));
+    g.fillStyle = gr; g.fill();
+    g.strokeStyle = back < 1 ? "rgba(200,90,120,.6)" : "rgba(255,175,195,.95)"; g.lineWidth = 1.7; g.stroke();
+    g.restore();
+  }
+
+  function sepal(k, p, sway) {
+    var sg = k < 0 ? -1 : 1, a = sg * (0.18 + p * (1.2 + 0.5 * (Math.abs(k) - 1))), len = 62;
+    g.save(); g.translate(BX + sway, BY + 3); g.rotate(a);
+    g.beginPath(); g.moveTo(0, 0); g.quadraticCurveTo(-9, -len * 0.5, 0, -len); g.quadraticCurveTo(9, -len * 0.5, 0, 0);
+    var gr = g.createLinearGradient(0, 0, 0, -len); gr.addColorStop(0, "rgb(25,110,70)"); gr.addColorStop(1, "rgb(80,190,120)");
+    g.fillStyle = gr; g.fill(); g.restore();
+  }
+
+  function leaf(x, y, a, grow) {
+    if (grow <= 0) return;
+    var len = 70 * grow, w = 24 * grow;
+    g.save(); g.translate(x, y); g.rotate(a);
+    g.beginPath(); g.moveTo(0, 0); g.quadraticCurveTo(w * 1.3, -len * 0.5, 0, -len); g.quadraticCurveTo(-w * 1.3, -len * 0.5, 0, 0);
+    var gr = g.createLinearGradient(0, 0, 0, -len); gr.addColorStop(0, "rgb(25,115,70)"); gr.addColorStop(1, "rgb(95,200,130)");
+    g.fillStyle = gr; g.fill();
+    g.strokeStyle = "rgb(20,90,55)"; g.lineWidth = 1.8; g.beginPath(); g.moveTo(0, 0); g.lineTo(0, -len * 0.92); g.stroke();
+    g.restore();
+  }
+
+  function spawn(x, y, n, burst) {
+    for (var k = 0; k < n; k++) {
+      var a = Math.random() * Math.PI * 2, petal = burst ? Math.random() < 0.35 : false, sp = burst ? 0.8 + Math.random() * 2.6 : 0;
+      bits.push({ petal: petal, x: x, y: y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - (petal ? 0.4 : 0.5 + Math.random() * 0.5),
+                  life: 0, max: 110 + Math.random() * 120, r: 1.6 + Math.random() * 1.8, rot: Math.random() * 6, ph: Math.random() * 6, b: burst });
+    }
+  }
+  function spawnPetal() {
+    bits.push({ petal: true, x: BX + (Math.random() - 0.5) * 120, y: BY - 70 - Math.random() * 40, vx: (Math.random() - 0.5) * 0.4, vy: 0.35 + Math.random() * 0.3,
+                life: 0, max: 260 + Math.random() * 100, r: 0, rot: Math.random() * 6, ph: Math.random() * 6, b: false });
+  }
+
+  function scene(el) {
+    var sec = reduce ? 0 : el / 1000;
+    var grow = easeOut(clamp((el - T_GROW) / D_GROW)), bs = easeOut(clamp((el - T_GROW - D_GROW + 200) / 700));
+    var p = smooth(clamp((el - T_BLOOM) / D_BLOOM)), sway = reduce ? 0 : Math.sin(sec * 0.7) * 3 * grow;
+    g.clearRect(0, 0, W, H);
+    g.lineCap = "round"; g.lineJoin = "round";
+
+    if (p > 0) {
+      var ag = g.createRadialGradient(BX, BY - 50, 10, BX, BY - 50, W * 0.55);
+      ag.addColorStop(0, "rgba(255,70,110," + (0.26 * p * (0.85 + 0.15 * Math.sin(sec * 1.5))) + ")"); ag.addColorStop(1, "rgba(255,70,110,0)");
+      g.fillStyle = ag; g.fillRect(0, 0, W, H);
+    }
+
+    var top = H - grow * (H - BY), sgr = g.createLinearGradient(0, H, 0, BY);
+    sgr.addColorStop(0, "rgb(20,95,60)"); sgr.addColorStop(1, "rgb(70,170,105)");
+    g.strokeStyle = sgr; g.lineWidth = 7; g.beginPath(); g.moveTo(BX, H + 4);
+    g.quadraticCurveTo(BX + 18, (H + top) / 2, BX + sway, top); g.stroke();
+    leaf(BX + 8, BY + 90, 1.0, clamp((BY + 90 - top) / 45));
+    leaf(BX + 3, BY + 128, -1.05, clamp((BY + 128 - top) / 45));
+
+    if (bs > 0) {
+      var kick = 0;
+      if (!reduce && kickAt) { var ka = el - kickAt; if (ka >= 0 && ka < 900) kick = 0.06 * Math.exp(-ka / 230) * Math.cos(ka / 55); }
+      var sc = (0.78 + 0.22 * p) * bs * (1 + kick);
+      g.save(); g.translate(BX + sway, BY); g.scale(sc, sc); g.translate(-BX - sway, -BY);
+      petals.forEach(function (P) { drawPetal(P, p, sway); });
+      for (var k = -2; k <= 2; k++) if (k) sepal(k, p, sway);
+      g.restore();
+    }
+
+    if (!reduce) {
+      if (p > 0.85 && bits.length < 70) { if (Math.random() < 0.05) spawnPetal(); else if (Math.random() < 0.5) spawn(BX + (Math.random() - 0.5) * 150, BY - 20 - Math.random() * 100, 1, false); }
+      for (var i = bits.length - 1; i >= 0; i--) {
+        var m = bits[i]; m.life++;
+        if (m.b) { m.vx *= 0.985; m.vy = m.vy * 0.985 + (m.petal ? 0.03 : 0.02); }
+        m.x += m.vx + Math.sin(m.life * 0.05 + m.ph) * (m.petal ? 0.5 : 0.25); m.y += m.vy; m.rot += 0.04;
+        if (m.life > m.max || m.y > H + 10 || m.y < -10 || m.x < -10 || m.x > W + 10) { bits.splice(i, 1); continue; }
+        var a = Math.min(1, Math.sin(Math.PI * m.life / m.max) * 1.6);
+        if (m.petal) {
+          g.save(); g.translate(m.x, m.y); g.rotate(m.rot); g.fillStyle = "rgba(255,125,160," + a + ")";
+          g.beginPath(); g.ellipse(0, 0, 9, 5.5, 0, 0, 7); g.fill(); g.restore();
+        } else {
+          g.fillStyle = "rgba(255," + (190 + 30 * a | 0) + ",110," + (0.95 * a) + ")";
+          g.beginPath(); g.arc(m.x, m.y, m.r, 0, 7); g.fill();
+        }
+      }
+    }
+  }
+
+  function render(el) {
+    scene(el);
+    var px = g.getImageData(0, 0, W, H).data;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    ctx.font = "500 " + (cw * 1.6) + "px ui-monospace, Consolas, 'Courier New', monospace";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    for (var cy = 0; cy < ROWS; cy++) {
+      for (var cx = 0; cx < COLS; cx++) {
+        var a = 0, r = 0, gg = 0, b = 0;
+        for (var yy = 0; yy < SY; yy++) {
+          var base = ((cy * SY + yy) * W + cx * SX) * 4;
+          for (var xx = 0; xx < SX; xx++) {
+            var k = base + xx * 4, al = px[k + 3];
+            if (al) { a += al; r += px[k] * al; gg += px[k + 1] * al; b += px[k + 2] * al; }
+          }
+        }
+        var cov = a / (255 * SX * SY);
+        if (cov < 0.15) continue;
+        r /= a; gg /= a; b /= a;
+        var lum = 0.299 * r + 0.587 * gg + 0.114 * b;
+        var dn = Math.min(1, cov * 1.3) * (0.38 + 0.62 * clamp(lum / 190)), idx = Math.floor(dn * RAMP.length);
+        if (idx < 1) continue;
+        ctx.fillStyle = "rgb(" + Math.min(255, r * 1.15 | 0) + "," + Math.min(255, gg * 1.15 | 0) + "," + Math.min(255, b * 1.15 | 0) + ")";
+        ctx.fillText(RAMP[idx], (cx + 0.5) * cw, (cy + 0.5) * ch);
+      }
+    }
+  }
+
+  function size() {
+    dpr = window.devicePixelRatio || 1;
+    var w = cv.getBoundingClientRect().width || 400;
+    cw = w / COLS; ch = cw * 2;
+    cv.width = Math.round(w * dpr); cv.height = Math.round(ROWS * ch * dpr);
+    cv.style.height = ROWS * ch + "px";
+  }
+  function frame(now) {
+    var el = now - t0;
+    var n = Math.min(TEXT.length, Math.max(0, Math.floor((el - T_TEXT) / 100)));
+    if (txt.textContent.length !== n) txt.textContent = TEXT.slice(0, n);
+    render(el);
+    if (el > T_DONE) btn.classList.add("show");
+    if (reduce && el > 1000) return;
+    raf = requestAnimationFrame(frame);
+  }
+  function start() {
+    cancelAnimationFrame(raf); bits = []; kickAt = 0;
+    t0 = performance.now() - (reduce ? 1e6 : 0);
+    btn.classList.remove("show"); txt.textContent = "";
+    raf = requestAnimationFrame(frame);
+  }
+  btn.addEventListener("click", start);
+  cv.addEventListener("click", function (e) {
+    if (reduce) return;
+    var r = cv.getBoundingClientRect(), tn = performance.now() - t0;
+    spawn((e.clientX - r.left) / r.width * W, (e.clientY - r.top) / r.height * H, 70, true);
+    if (tn > T_BLOOM) kickAt = tn;
+  });
+  window.addEventListener("resize", size);
+  size(); start();
+})();
+</script>
+</body>
+</html>
